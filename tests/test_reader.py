@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import os
 import tarfile
 from pathlib import Path
 
@@ -17,8 +18,9 @@ from pyrealm import (
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
-ENCRYPTED_REALM = FIXTURES / "encrypted.realm"
-ENCRYPTION_KEY = FIXTURES / "encrypted.key"
+GENERATED_FIXTURES = Path(os.environ.get("PYREALM_TEST_FIXTURES", FIXTURES))
+ENCRYPTED_REALM = GENERATED_FIXTURES / "encrypted.realm"
+ENCRYPTION_KEY = GENERATED_FIXTURES / "encrypted.key"
 ANDROID_SNAPSHOT = (
     Path(__file__).parent / "data" / "im.vector.app-2026-07-02-snapshot-after-second-deleted.tar"
 )

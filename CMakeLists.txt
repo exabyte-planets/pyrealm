@@ -45,5 +45,5 @@ endif()
 
 install(TARGETS _native DESTINATION pyrealm)
 
-add_executable(pyrealm_fixture_generator EXCLUDE_FROM_ALL native/create_fixture.cpp)
+add_executable(pyrealm_fixture_generator native/create_fixture.cpp)
 target_link_libraries(pyrealm_fixture_generator PRIVATE RealmFFIStatic)
