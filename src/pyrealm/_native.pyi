@@ -1,5 +1,4 @@
-from collections.abc import Sequence
-from typing import Any, overload
+from typing import Any
 
 class NativeError(Exception): ...
 
@@ -17,12 +16,9 @@ class NativeObjectId:
 class NativeDecimal128:
     value: str
 
-class NativeResults(Sequence[dict[str, object]]):
+class NativeResults:
     def __len__(self) -> int: ...
-    @overload
     def __getitem__(self, index: int) -> dict[str, object]: ...
-    @overload
-    def __getitem__(self, index: slice) -> Sequence[dict[str, object]]: ...
 
 class NativeRealm:
     def __init__(self, path: str, key: bytes = ...) -> None: ...

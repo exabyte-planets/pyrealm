@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import tarfile
 from pathlib import Path
 
 import pytest
 
-from pyrealm import RealmLink, RealmOpenError, RealmQueryError, open_realm
+from pyrealm import (
+    RealmError,
+    RealmLink,
+    RealmOpenError,
+    RealmQueryError,
+    RealmTimestamp,
+    open_realm,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ENCRYPTED_REALM = FIXTURES / "encrypted.realm"
@@ -90,6 +98,39 @@ def test_serializes_links_as_references_or_depth_limited_records(realm) -> None:
     expanded = alice.to_dict(expand_links=True, max_depth=2)
     assert expanded["friend"]["name"] == "Bob"
     assert expanded["friend"]["friend"] == {"$ref": {"table": "Person", "key": 0}}
+
+
+def test_timestamp_datetime_handles_pre_epoch_and_out_of_range() -> None:
+    pre_epoch = RealmTimestamp(seconds=-2, nanoseconds=-500_000_000)
+    assert pre_epoch.datetime == dt.datetime(1969, 12, 31, 23, 59, 57, 500_000, tzinfo=dt.UTC)
+
+    with pytest.raises(RealmError, match="outside the datetime range"):
+        _ = RealmTimestamp(seconds=2**62, nanoseconds=0).datetime
+
+
+def test_links_obey_the_hash_equality_contract(realm) -> None:
+    bob_friend = realm["Person"].where("name == $0", "Bob")[0]["friend"]
+    event_owner = realm["Event"].where("id == $0", 10)[0]["owner"]
+
+    assert isinstance(bob_friend, RealmLink)
+    assert isinstance(event_owner, RealmLink)
+    assert bob_friend is not event_owner
+    assert bob_friend == event_owner
+    assert hash(bob_friend) == hash(event_owner)
+    assert len({bob_friend, event_owner}) == 1
+
+
+def test_use_after_close_raises_the_public_realm_error() -> None:
+    realm = open_realm(ENCRYPTED_REALM, key_file=ENCRYPTION_KEY)
+    people = realm["Person"]
+    results = people.all()
+    realm.close()
+
+    assert len(results) == 2  # the count was snapshotted when the query ran
+    with pytest.raises(RealmError):
+        results[0]
+    with pytest.raises(RealmError):
+        len(people)
 
 
 def test_rejects_unknown_tables_and_ambiguous_key_sources(realm) -> None:

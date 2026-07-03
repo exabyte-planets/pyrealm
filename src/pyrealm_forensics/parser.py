@@ -27,7 +27,17 @@ REALM_MAGIC = b"T-DB"
 ARRAY_SIGNATURE = b"AAAA"
 STREAMING_COOKIE = 0x3034125237E526C8
 WIDTHS = (0, 1, 2, 4, 8, 16, 32, 64)
-_UTF16LE_PRINTABLE = re.compile(rb"(?:[\x20-\x7e]\x00){4,}")
+ENCRYPTION_BLOCK_SIZE = 4096
+ENCRYPTED_ENTROPY_THRESHOLD = 7.5
+
+
+def _utf16le_pattern(minimum: int) -> re.Pattern[bytes]:
+    """Build a printable UTF-16LE run matcher honoring the caller's minimum length.
+
+    Compiling per extraction keeps the requested minimum authoritative for both
+    encodings instead of silently imposing a fixed floor on UTF-16 strings.
+    """
+    return re.compile(rb"(?:[\x20-\x7e]\x00){%d,}" % minimum)
 
 
 def _sha256(file: BinaryIO) -> str:
@@ -61,7 +71,8 @@ def _sample_entropy(data: mmap.mmap) -> float:
         sample = data[:half] + data[-half:]
     counts = Counter(sample)
     total = len(sample)
-    return -sum((count / total) * math.log2(count / total) for count in counts.values())
+    entropy = -sum((count / total) * math.log2(count / total) for count in counts.values())
+    return entropy if entropy > 0.0 else 0.0
 
 
 def _parse_header(data: mmap.mmap) -> RealmHeader | None:
@@ -228,21 +239,20 @@ def _classify_nodes(nodes: dict[int, ArrayNode], header: RealmHeader) -> tuple[A
     return tuple(classified)
 
 
-def analyze_realm(path: Path) -> Analysis:
-    """Inspect a possible Realm file and return conservative structural metadata.
+def _analyze(path: Path, minimum_string: int | None) -> tuple[Analysis, list[CarvedString]]:
+    """Analyze one open mapping, optionally carving strings from the same bytes.
 
     The source is resolved and opened read-only, hashed for provenance, and
-    memory-mapped to avoid copying the full database. A missing header is not
-    called encryption: the filename only changes the reported possibility because
-    damaged and unsupported Realm formats can look the same. For recognized
-    plaintext files, warnings expose header inconsistencies instead of hiding
-    partial results.
+    memory-mapped to avoid copying the full database. Extracting strings inside
+    the same mapping guarantees the digest, structural offsets, and carved
+    strings all describe the identical bytes, and avoids a second open and page
+    walk over potentially large evidence.
     """
     resolved = path.expanduser().resolve(strict=True)
     with resolved.open("rb") as file:
         digest = _sha256(file)
         if resolved.stat().st_size == 0:
-            return Analysis(
+            empty = Analysis(
                 path=str(resolved),
                 sha256=digest,
                 file_size=0,
@@ -252,32 +262,12 @@ def analyze_realm(path: Path) -> Analysis:
                 arrays=(),
                 warnings=("The file is empty.",),
             )
+            return empty, []
         with mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as data:
             entropy = _sample_entropy(data)
             header = _parse_header(data)
             if header is None:
-                realm_named = resolved.suffix.lower() == ".realm"
-                classification = (
-                    "possible-encrypted-or-unsupported-realm"
-                    if realm_named
-                    else "not-a-plain-realm"
-                )
-                warning = (
-                    "The T-DB header is absent. The filename is consistent with an encrypted, "
-                    "damaged, or unsupported Realm; entropy alone cannot distinguish them."
-                    if realm_named
-                    else "The T-DB header is absent; this is not a recognized plaintext Realm."
-                )
-                return Analysis(
-                    path=str(resolved),
-                    sha256=digest,
-                    file_size=len(data),
-                    classification=classification,
-                    entropy=entropy,
-                    header=None,
-                    arrays=(),
-                    warnings=(warning,),
-                )
+                return _classify_headerless(resolved, digest, data, entropy), []
             nodes = _add_references(data, _scan_array_candidates(data))
             arrays = _classify_nodes(nodes, header)
             warnings: list[str] = []
@@ -290,7 +280,10 @@ def analyze_realm(path: Path) -> Analysis:
                 warnings.append("The inactive top reference did not resolve to a recognized array.")
             if header.reserved:
                 warnings.append("The reserved Realm header byte is non-zero.")
-            return Analysis(
+            strings: list[CarvedString] = []
+            if minimum_string is not None and arrays:
+                strings = _extract_strings(data, arrays, minimum_string)
+            analysis = Analysis(
                 path=str(resolved),
                 sha256=digest,
                 file_size=len(data),
@@ -300,6 +293,57 @@ def analyze_realm(path: Path) -> Analysis:
                 arrays=arrays,
                 warnings=tuple(warnings),
             )
+            return analysis, strings
+
+
+def _classify_headerless(resolved: Path, digest: str, data: mmap.mmap, entropy: float) -> Analysis:
+    """Classify a file without a Realm header from its content, not its name.
+
+    Encrypted Realms are organized in 4096-byte blocks of high-entropy data, so
+    those content signals decide the classification; recovered evidence often
+    arrives without its original filename, which is therefore reported only as
+    corroborating (or contradicting) metadata. Neither signal can prove
+    encryption: damaged and unsupported Realm formats can look the same.
+    """
+    encrypted_layout = (
+        entropy >= ENCRYPTED_ENTROPY_THRESHOLD and len(data) % ENCRYPTION_BLOCK_SIZE == 0
+    )
+    if encrypted_layout:
+        classification = "possible-encrypted-or-unsupported-realm"
+        warning = (
+            "The T-DB header is absent, but high byte entropy and a 4096-byte-aligned size "
+            "are consistent with an encrypted, damaged, or unsupported Realm; these signals "
+            "alone cannot distinguish them."
+        )
+    else:
+        classification = "not-a-plain-realm"
+        warning = "The T-DB header is absent; this is not a recognized plaintext Realm."
+    warnings = [warning]
+    if resolved.suffix.lower() == ".realm" and not encrypted_layout:
+        warnings.append(
+            "The filename suffix is .realm, but the content does not resemble an encrypted Realm."
+        )
+    return Analysis(
+        path=str(resolved),
+        sha256=digest,
+        file_size=len(data),
+        classification=classification,
+        entropy=entropy,
+        header=None,
+        arrays=(),
+        warnings=tuple(warnings),
+    )
+
+
+def analyze_realm(path: Path) -> Analysis:
+    """Inspect a possible Realm file and return conservative structural metadata.
+
+    A missing header is not called encryption: content signals only change the
+    reported possibility because damaged and unsupported Realm formats can look
+    the same. For recognized plaintext files, warnings expose header
+    inconsistencies instead of hiding partial results.
+    """
+    return _analyze(path, None)[0]
 
 
 def _utf8_strings(payload: bytes, minimum: int) -> list[tuple[int, str]]:
@@ -348,6 +392,7 @@ def _extract_strings(
     current values from inactive or orphaned remnants.
     """
     strings: list[CarvedString] = []
+    utf16le_printable = _utf16le_pattern(minimum)
     for node in nodes:
         if node.has_refs:
             continue
@@ -363,18 +408,16 @@ def _extract_strings(
                     reachability=node.reachability,
                 )
             )
-        for match in _UTF16LE_PRINTABLE.finditer(payload):
-            value = match.group().decode("utf-16le")
-            if len(value) >= minimum:
-                strings.append(
-                    CarvedString(
-                        file_offset=payload_start + match.start(),
-                        array_offset=node.offset,
-                        encoding="utf-16le",
-                        value=value,
-                        reachability=node.reachability,
-                    )
+        for match in utf16le_printable.finditer(payload):
+            strings.append(
+                CarvedString(
+                    file_offset=payload_start + match.start(),
+                    array_offset=node.offset,
+                    encoding="utf-16le",
+                    value=match.group().decode("utf-16le"),
+                    reachability=node.reachability,
                 )
+            )
     return strings
 
 
@@ -382,13 +425,16 @@ def carve_realm(path: Path, output: Path, minimum_string: int = 4) -> Analysis:
     """Write analysis, array metadata, and carved strings to a new directory.
 
     Refusing an existing directory protects prior results from accidental
-    overwrite and keeps every output set attributable to one invocation. Reports
-    are still created for unrecognized inputs, preserving the digest,
+    overwrite and keeps every output set attributable to one invocation; both
+    preconditions are checked before the potentially expensive analysis pass.
+    Reports are still created for unrecognized inputs, preserving the digest,
     classification, and warnings even when no safe string extraction is possible.
     """
     if minimum_string < 1:
         raise ValueError("minimum_string must be at least 1")
-    analysis = analyze_realm(path)
+    if output.exists():
+        raise FileExistsError(f"output directory already exists: {output}")
+    analysis, strings = _analyze(path, minimum_string)
     output.mkdir(parents=True, exist_ok=False)
     with (output / "summary.json").open("w", encoding="utf-8") as file:
         json.dump(analysis_dict(analysis), file, indent=2)
@@ -397,13 +443,6 @@ def carve_realm(path: Path, output: Path, minimum_string: int = 4) -> Analysis:
         for node in analysis.arrays:
             file.write(json.dumps(node._asdict(), sort_keys=True))
             file.write("\n")
-    strings: list[CarvedString] = []
-    if analysis.header is not None and analysis.arrays:
-        with (
-            Path(analysis.path).open("rb") as source,
-            mmap.mmap(source.fileno(), 0, access=mmap.ACCESS_READ) as data,
-        ):
-            strings = _extract_strings(data, analysis.arrays, minimum_string)
     with (output / "strings.csv").open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(
             file,

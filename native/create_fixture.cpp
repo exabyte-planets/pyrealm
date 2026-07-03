@@ -92,13 +92,15 @@ realm_property_info_t property(
 
 int main(int argc, char** argv)
 try {
-    if (argc != 3) {
+    const std::string realm_path = argc > 1 ? argv[1] : "";
+    const std::string key_path = argc > 2 ? argv[2] : "";
+    // Realm creates side files named after its path, so a flag mistaken for a path
+    // (e.g. --help) would litter the working directory with --help.lock and friends.
+    if (argc != 3 || realm_path.empty() || key_path.empty() || realm_path.front() == '-'
+        || key_path.front() == '-') {
         std::cerr << "usage: pyrealm_fixture_generator OUTPUT.realm OUTPUT.key\n";
         return 2;
     }
-
-    const std::string realm_path = argv[1];
-    const std::string key_path = argv[2];
     std::array<std::uint8_t, 64> key{};
     for (std::size_t index = 0; index < key.size(); ++index) {
         key[index] = static_cast<std::uint8_t>(index);
@@ -107,6 +109,9 @@ try {
     std::ofstream key_file(key_path, std::ios::binary);
     key_file.write(reinterpret_cast<const char*>(key.data()), key.size());
     key_file.close();
+    if (!key_file) {
+        throw std::runtime_error("failed to write fixture key file: " + key_path);
+    }
 
     const realm_property_info_t person_properties[] = {
         property(
