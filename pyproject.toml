@@ -8,7 +8,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "pyrealm-forensics"
 version = "0.1.0"
-description = "Read-only logical reader, structural scanner, and carver for Realm databases"
+description = "Read-only Realm database library and forensic recovery CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -16,7 +16,7 @@ authors = [{ name = "pyrealm contributors" }]
 dependencies = []
 
 [project.scripts]
-pyrealm = "pyrealm_forensics.cli:main"
+pyrealm-recover = "pyrealm_forensics.cli:main"
 
 [dependency-groups]
 dev = [
@@ -33,7 +33,13 @@ dev = [
 [tool.scikit-build]
 build-dir = "build-v13/{wheel_tag}"
 cmake.build-type = "Release"
-wheel.packages = ["src/pyrealm_forensics"]
+wheel.packages = ["src/pyrealm", "src/pyrealm_forensics"]
+
+[tool.cibuildwheel]
+build = ["cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+skip = ["*-musllinux_*"]
+test-command = "pytest {project}/tests"
+test-requires = ["pytest>=9.1.1"]
 
 [tool.ruff]
 exclude = ["build", "build-*"]

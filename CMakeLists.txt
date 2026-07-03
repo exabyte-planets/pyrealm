@@ -43,7 +43,7 @@ else()
     target_compile_options(_native PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-install(TARGETS _native DESTINATION pyrealm_forensics)
+install(TARGETS _native DESTINATION pyrealm)
 
 add_executable(pyrealm_fixture_generator EXCLUDE_FROM_ALL native/create_fixture.cpp)
 target_link_libraries(pyrealm_fixture_generator PRIVATE RealmFFIStatic)

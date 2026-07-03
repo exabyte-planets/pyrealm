@@ -1,31 +1,28 @@
 # pyrealm-forensics
 
-`pyrealm` provides read-only logical access, structural scanning, and conservative carving for
-Android Realm files. Logical access uses a pinned Realm Core build to open encrypted or plaintext
-Realm files immutably, discover their schema, iterate records, resolve links, and execute Realm
-Query Language expressions.
+This distribution provides two deliberately separate interfaces:
 
-The structural scanner identifies the Realm header, walks both copy-on-write root trees,
-inventories Realm arrays, and extracts printable strings from active, inactive, and orphaned
-arrays.
+- `pyrealm`: a Python library for read-only access to live logical data.
+- `pyrealm-recover`: a forensic CLI for structural inspection and conservative recovery.
 
-It does **not** claim that every orphan is deleted evidence or reconstruct complete logical
-records. Realm is column-oriented; correlating carved columns into records is version- and
-schema-sensitive. Preserve the source file and validate every result against app context.
+Both interfaces open evidence immutably, but they solve different problems. The library uses
+Realm Core to expose the current committed schema and records. The recovery CLI scans on-disk
+structures, including data not reachable from the current root.
 
-## Install and run
+## Installation
 
 ```sh
 UV_CACHE_DIR=.uv-cache uv sync
-uv run pyrealm inspect evidence/default.realm
-uv run pyrealm inspect evidence/default.realm --json
-uv run pyrealm carve evidence/default.realm -o results/default
 ```
 
-Open an encrypted Realm using a raw 64-byte key file:
+## Python library
+
+Application code imports `pyrealm`. It can open encrypted or plaintext Realm files, discover
+their schema, iterate records, resolve links, and execute parameterized Realm Query Language
+expressions:
 
 ```python
-from pyrealm_forensics import open_realm
+from pyrealm import open_realm
 
 with open_realm("evidence/disk_store.realm", key_file="evidence/disk_store.key") as realm:
     print(realm.table_names)
@@ -48,19 +45,21 @@ print(sender["displayName"])
 serializable = event.to_dict(expand_links=True, max_depth=2)
 ```
 
-Inspect the logical schema or dump records as JSON Lines:
+Logical opening disables Realm file-format upgrades. Unsupported historical formats fail
+explicitly rather than modifying the source. The library only exposes the current committed
+state; it does not recover deleted records.
+
+## Recovery CLI
+
+The `pyrealm-recover` command identifies the Realm header, walks both copy-on-write root trees,
+inventories Realm arrays, and extracts printable strings from active, inactive, and orphaned
+arrays:
 
 ```sh
-uv run pyrealm schema evidence/disk_store.realm --key-file evidence/disk_store.key
-uv run pyrealm dump evidence/disk_store.realm \
-  --key-file evidence/disk_store.key \
-  --table EventEntity \
-  --query 'type == $0 SORT(originServerTs DESC) LIMIT(100)' \
-  --arg '"m.room.message"'
+uv run pyrealm-recover inspect evidence/default.realm
+uv run pyrealm-recover inspect evidence/default.realm --json
+uv run pyrealm-recover carve evidence/default.realm -o results/default
 ```
-
-Logical opening is immutable and disables Realm file-format upgrades. Unsupported historical
-formats fail explicitly rather than modifying the source.
 
 The output directory is intentionally required to be new. It contains:
 
@@ -75,12 +74,9 @@ Reachability means:
 - `inactive`: reachable only from the alternate root; often a prior transaction, not proof of deletion
 - `orphan`: valid array signature not reachable from either root; a carving candidate, not proof of deletion
 
-See [docs/realm_android.md](docs/realm_android.md) for acquisition, internals, encryption,
-limitations, and related projects.
-
-The supplied Element Classic control is summarized in
-[docs/element_baseline.md](docs/element_baseline.md). It demonstrates why inactive/orphan
-structures cannot by themselves establish deletion.
+The CLI does **not** claim that every orphan is deleted evidence or reconstruct complete logical
+records. Realm is column-oriented; correlating carved columns into records is version- and
+schema-sensitive. Preserve the source file and validate every result against app context.
 
 ## Development
 
@@ -92,5 +88,25 @@ uv run ruff format --check .
 uv run ty check src tests
 ```
 
-Logical record reading targets the current committed Realm state first. Schema-aware access
-to inactive snapshots and deleted logical records remains future work.
+Schema-aware access to inactive snapshots and deleted logical records remains future work.
+
+## Releases
+
+GitHub Actions checks linting, formatting, types, and tests on every pull request and push to
+`main`. It also builds and tests CPython 3.11–3.14 wheels for Linux x86-64, macOS x86-64 and
+Apple silicon, and Windows x86-64.
+
+Releases are published to PyPI from version tags using trusted publishing:
+
+1. Create a GitHub environment named `pypi`.
+2. In the PyPI project settings, add a GitHub trusted publisher for the `Release` workflow,
+   environment `pypi`, and workflow file `release.yml`.
+3. Update `project.version` in `pyproject.toml`, merge the change to `main`, then tag that commit:
+
+   ```sh
+   git tag -a v0.2.0 -m "v0.2.0"
+   git push origin v0.2.0
+   ```
+
+The workflow refuses to publish when the tag and `project.version` differ. No PyPI API token is
+stored in GitHub.

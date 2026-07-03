@@ -9,8 +9,6 @@ import pytest
 from pyrealm_forensics.cli import _human_summary, _parser, main
 from pyrealm_forensics.models import Analysis, ArrayNode, RealmHeader
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
 
 def analysis(*, with_header: bool = True) -> Analysis:
     header = (
@@ -135,44 +133,3 @@ def test_main_carve_returns_two_without_header(
 
     assert status == 2
     capsys.readouterr()
-
-
-def test_main_schema_prints_logical_schema(capsys: pytest.CaptureFixture[str]) -> None:
-    status = main(
-        [
-            "schema",
-            str(FIXTURES / "encrypted.realm"),
-            "--key-file",
-            str(FIXTURES / "encrypted.key"),
-        ]
-    )
-
-    schema = json.loads(capsys.readouterr().out)
-    assert status == 0
-    assert [table["name"] for table in schema] == ["Event", "Person"]
-
-
-def test_main_dump_executes_rql_and_writes_json_lines(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    status = main(
-        [
-            "dump",
-            str(FIXTURES / "encrypted.realm"),
-            "--key-file",
-            str(FIXTURES / "encrypted.key"),
-            "--table",
-            "Event",
-            "--query",
-            "priority >= $0 SORT(priority DESC)",
-            "--arg",
-            "2",
-            "--expand-links",
-            "1",
-        ]
-    )
-
-    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
-    assert status == 0
-    assert rows[0]["title"] == "Review evidence"
-    assert rows[0]["owner"]["name"] == "Alice"

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pyrealm_forensics import RealmLink, RealmOpenError, RealmQueryError, open_realm
+from pyrealm import RealmLink, RealmOpenError, RealmQueryError, open_realm
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ENCRYPTED_REALM = FIXTURES / "encrypted.realm"
