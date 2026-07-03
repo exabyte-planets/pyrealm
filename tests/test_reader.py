@@ -5,15 +5,18 @@ import hashlib
 import os
 import tarfile
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+import pyrealm.reader as reader_module
 from pyrealm import (
     RealmError,
     RealmLink,
     RealmOpenError,
     RealmQueryError,
     RealmTimestamp,
+    Results,
     open_realm,
 )
 
@@ -54,8 +57,62 @@ def test_rejects_wrong_length_and_wrong_value_keys() -> None:
     with pytest.raises(ValueError, match="64 bytes"):
         open_realm(ENCRYPTED_REALM, key=b"short")
 
-    with pytest.raises(RealmOpenError):
+    with pytest.raises(RealmOpenError, match="pyrealm-recover inspect"):
         open_realm(ENCRYPTED_REALM, key=b"\xff" * 64)
+
+
+def test_malformed_file_reports_recovery_options(tmp_path: Path) -> None:
+    malformed = tmp_path / "malformed.realm"
+    malformed.write_bytes(b"T-DB and truncated data")
+
+    with pytest.raises(RealmOpenError, match="Preserve the original file"):
+        open_realm(malformed)
+
+
+def test_malformed_native_schema_is_closed_and_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "schema.realm"
+    path.touch()
+
+    class MalformedNative:
+        closed = False
+
+        def __init__(self, *_: object) -> None:
+            pass
+
+        def schema(self) -> list[dict[str, object]]:
+            return [{"key": 1}]
+
+        def close(self) -> None:
+            self.closed = True
+
+    native = MalformedNative()
+    monkeypatch.setattr(reader_module._native, "NativeRealm", lambda *_: native)
+
+    with pytest.raises(RealmOpenError, match="pyrealm-recover carve"):
+        open_realm(path)
+
+    assert native.closed
+
+
+def test_invalid_schema_text_is_translated_to_open_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "schema-text.realm"
+    path.touch()
+
+    class InvalidTextNative:
+        def schema(self) -> list[dict[str, object]]:
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(reader_module._native, "NativeRealm", lambda *_: InvalidTextNative())
+
+    with pytest.raises(RealmOpenError, match="verify the encryption key"):
+        open_realm(path)
 
 
 def test_exposes_schema_and_records(realm) -> None:
@@ -133,6 +190,52 @@ def test_use_after_close_raises_the_public_realm_error() -> None:
         results[0]
     with pytest.raises(RealmError):
         len(people)
+
+
+def test_iter_valid_skips_bad_records_and_reports_their_indexes(realm) -> None:
+    native_results = realm._native.all("Person")
+
+    class PartlyUnreadableResults:
+        def __len__(self) -> int:
+            return 3
+
+        def __getitem__(self, index: int) -> dict[str, object]:
+            if index == 1:
+                raise reader_module._native.NativeError("damaged record")
+            return native_results[0 if index == 0 else 1]
+
+    errors: list[tuple[int, str]] = []
+    results = Results(
+        realm,
+        cast(reader_module._native.NativeResults, PartlyUnreadableResults()),
+    )
+
+    records = list(results.iter_valid(lambda index, error: errors.append((index, str(error)))))
+
+    assert [record["name"] for record in records] == ["Alice", "Bob"]
+    assert errors == [(1, "damaged record")]
+
+
+@pytest.mark.parametrize(
+    "raw, message",
+    [
+        ({"__object_key__": 1}, "missing native metadata"),
+        ({"__table_key__": "bad", "__object_key__": 1}, "invalid native"),
+    ],
+)
+def test_malformed_record_metadata_raises_public_error(realm, raw, message: str) -> None:
+    with pytest.raises(RealmError, match=message):
+        realm._record_from_raw(raw)
+
+
+def test_unknown_record_and_link_table_keys_raise_public_errors(realm) -> None:
+    record = realm._record_from_raw({"__table_key__": 999, "__object_key__": 1})
+    link = RealmLink(realm, 999, 1)
+
+    with pytest.raises(RealmError, match="unknown Realm table key"):
+        _ = record.table_name
+    with pytest.raises(RealmError, match="unknown Realm table key"):
+        _ = link.table_name
 
 
 def test_rejects_unknown_tables_and_ambiguous_key_sources(realm) -> None:

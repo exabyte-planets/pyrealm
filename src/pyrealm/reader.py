@@ -7,11 +7,12 @@ import contextlib
 import datetime as dt
 import decimal
 import uuid
+import warnings
 import weakref
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast, overload
+from typing import overload
 
 from pyrealm import _native
 
@@ -28,6 +29,30 @@ class RealmOpenError(RealmError):
 
 class RealmQueryError(RealmError):
     """Raised when Realm Core rejects or cannot execute an RQL query."""
+
+
+def _recovery_advice(path: Path) -> str:
+    return (
+        f" Preserve the original file, verify the encryption key and source copy, then run "
+        f"`pyrealm-recover inspect {path}`; use `pyrealm-recover carve` if logical access "
+        f"still fails."
+    )
+
+
+def _record_identity(raw: Mapping[str, object]) -> tuple[int, int]:
+    try:
+        table_key = raw["__table_key__"]
+        object_key = raw["__object_key__"]
+    except KeyError as error:
+        raise RealmError(f"record is missing native metadata {error.args[0]!r}") from None
+    if (
+        not isinstance(table_key, int)
+        or isinstance(table_key, bool)
+        or not isinstance(object_key, int)
+        or isinstance(object_key, bool)
+    ):
+        raise RealmError("record has invalid native table or object key metadata")
+    return table_key, object_key
 
 
 @contextlib.contextmanager
@@ -109,7 +134,14 @@ class RealmLink(Mapping[str, object]):
 
     @property
     def table_name(self) -> str:
-        return self._realm()._schema_by_key[self.table_key].name
+        realm = self._realm()
+        try:
+            return realm._schema_by_key[self.table_key].name
+        except KeyError:
+            raise RealmError(
+                f"link refers to unknown Realm table key {self.table_key}; "
+                "the record may be damaged"
+            ) from None
 
     def resolve(self) -> Record:
         """Resolve and cache the target record."""
@@ -160,14 +192,21 @@ class Record(Mapping[str, object]):
 
     def __init__(self, realm: Realm, raw: dict[str, object]) -> None:
         self._realm_ref = weakref.ref(realm)
-        self.table_key = cast(int, raw.pop("__table_key__"))
-        self.object_key = cast(int, raw.pop("__object_key__"))
+        self.table_key, self.object_key = _record_identity(raw)
+        raw.pop("__table_key__")
+        raw.pop("__object_key__")
         self._raw = raw
         self._converted: dict[str, object] = {}
 
     @property
     def table_name(self) -> str:
-        return self._realm()._schema_by_key[self.table_key].name
+        try:
+            return self._realm()._schema_by_key[self.table_key].name
+        except KeyError:
+            raise RealmError(
+                f"record refers to unknown Realm table key {self.table_key}; "
+                "the record may be damaged"
+            ) from None
 
     def __getitem__(self, key: str) -> object:
         if key in self._converted:
@@ -176,7 +215,10 @@ class Record(Mapping[str, object]):
             raw = self._raw[key]
         except KeyError:
             raise KeyError(key) from None
-        converted = self._realm()._convert(raw)
+        try:
+            converted = self._realm()._convert(raw)
+        except RealmError as error:
+            raise RealmError(f"cannot decode field {key!r}: {error}") from error
         self._converted[key] = converted
         return converted
 
@@ -250,6 +292,27 @@ class Results(Sequence[Record]):
     def __iter__(self) -> Iterator[Record]:
         for index in range(len(self)):
             item = self[index]
+            assert isinstance(item, Record)
+            yield item
+
+    def iter_valid(
+        self,
+        on_error: Callable[[int, RealmError], None] | None = None,
+    ) -> Iterator[Record]:
+        """Yield readable records, reporting and skipping damaged entries."""
+        for index in range(len(self)):
+            try:
+                item = self[index]
+            except RealmError as error:
+                if on_error is not None:
+                    on_error(index, error)
+                else:
+                    warnings.warn(
+                        f"skipping unreadable Realm result at index {index}: {error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                continue
             assert isinstance(item, Record)
             yield item
 
@@ -368,10 +431,7 @@ class Realm:
         return self._record_from_raw(raw)
 
     def _record_from_raw(self, raw: dict[str, object]) -> Record:
-        identity = (
-            cast(int, raw["__table_key__"]),
-            cast(int, raw["__object_key__"]),
-        )
+        identity = _record_identity(raw)
         cached = self._record_cache.get(identity)
         if cached is not None:
             return cached
@@ -387,7 +447,10 @@ class Realm:
         if isinstance(value, _native.NativeObjectId):
             return RealmObjectId(value.value)
         if isinstance(value, _native.NativeDecimal128):
-            return decimal.Decimal(value.value)
+            try:
+                return decimal.Decimal(value.value)
+            except decimal.DecimalException as error:
+                raise RealmError(f"invalid Decimal128 value {value.value!r}") from error
         if isinstance(value, list):
             return tuple(self._convert(item) for item in value)
         if isinstance(value, set):
@@ -449,8 +512,12 @@ def open_realm(
         key_data = b""
     if len(key_data) not in (0, 64):
         raise ValueError("Realm encryption keys must contain exactly 64 bytes")
+    native: _native.NativeRealm | None = None
     try:
         native = _native.NativeRealm(str(resolved), key_data)
-    except _native.NativeError as error:
-        raise RealmOpenError(str(error)) from error
-    return Realm(resolved, native)
+        return Realm(resolved, native)
+    except (_native.NativeError, KeyError, TypeError, UnicodeError) as error:
+        if native is not None:
+            with contextlib.suppress(_native.NativeError):
+                native.close()
+        raise RealmOpenError(f"{error}.{_recovery_advice(resolved)}") from error

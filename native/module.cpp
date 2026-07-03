@@ -156,6 +156,17 @@ std::string decimal_string(const realm_decimal128_t& value)
     return realm::Decimal128(raw).to_string();
 }
 
+py::object decode_utf8(const char* data, std::size_t size)
+{
+    // Damaged files can expose invalid string bytes. Keep the surrounding record
+    // readable and mark corrupt sequences with Unicode's replacement character.
+    auto* decoded = PyUnicode_DecodeUTF8(data, static_cast<Py_ssize_t>(size), "replace");
+    if (!decoded) {
+        throw py::error_already_set();
+    }
+    return py::reinterpret_steal<py::object>(decoded);
+}
+
 struct NativeLink {
     realm_class_key_t table_key;
     realm_object_key_t object_key;
@@ -461,7 +472,7 @@ private:
             case RLM_TYPE_BOOL:
                 return py::bool_(value.boolean);
             case RLM_TYPE_STRING:
-                return py::str(value.string.data, value.string.size);
+                return decode_utf8(value.string.data, value.string.size);
             case RLM_TYPE_BINARY:
                 return py::bytes(
                     reinterpret_cast<const char*>(value.binary.data), value.binary.size);
