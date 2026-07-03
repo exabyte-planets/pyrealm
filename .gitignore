@@ -8,6 +8,11 @@ __pycache__/
 results/
 evidence/
 tests/data/
+*.realm.lock
+*.realm.note
+*.realm.management/
+/--help.lock
+/--help.management/
 .idea
 
 \-\-*/

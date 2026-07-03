@@ -157,6 +157,17 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parsed.active_top_ref, 72)
         self.assertEqual(parsed.inactive_top_ref, 0)
 
+    def test_parse_header_uses_selected_slot_after_streaming_conversion(self) -> None:
+        data = struct.pack("<QQ", 0xFFFFFFFFFFFFFFFF, 24) + b"T-DB" + bytes((9, 10, 0, 1))
+
+        parsed = _parse_header(mmap_compatible(data))
+
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertFalse(parsed.streaming)
+        self.assertEqual(parsed.active_top_ref, 24)
+        self.assertEqual(parsed.inactive_top_ref, 0)
+
     def test_array_size_supports_each_width_scheme(self) -> None:
         self.assertEqual(_array_size(0x02, 9), (16, 8, 2))
         self.assertEqual(_array_size(0x0A, 5), (24, 16, 2))

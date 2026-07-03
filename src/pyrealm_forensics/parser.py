@@ -78,7 +78,7 @@ def _parse_header(data: mmap.mmap) -> RealmHeader | None:
     format_slots = (data[20], data[21])
     flags = data[23]
     active_slot = flags & 1
-    streaming = top_refs[0] == 0xFFFFFFFFFFFFFFFF
+    streaming = active_slot == 0 and top_refs[0] == 0xFFFFFFFFFFFFFFFF
     if streaming:
         if len(data) < FILE_HEADER_SIZE + 16:
             return None
@@ -90,6 +90,8 @@ def _parse_header(data: mmap.mmap) -> RealmHeader | None:
     else:
         active_top_ref = top_refs[active_slot]
         inactive_top_ref = top_refs[active_slot ^ 1]
+        if inactive_top_ref == 0xFFFFFFFFFFFFFFFF:
+            inactive_top_ref = 0
     return RealmHeader(
         top_refs=top_refs,
         format_slots=format_slots,
