@@ -46,6 +46,34 @@ RealmPtr<T> take(T* value, const std::string& context)
     return RealmPtr<T>(value);
 }
 
+bool scheduler_is_on_thread(realm_userdata_t)
+{
+    return true;
+}
+
+bool scheduler_is_same_as(const void*, const void*)
+{
+    return true;
+}
+
+bool scheduler_can_deliver_notifications(realm_userdata_t)
+{
+    return false;
+}
+
+RealmPtr<realm_scheduler_t> make_scheduler()
+{
+    return take(
+        realm_scheduler_new(
+            nullptr,
+            nullptr,
+            nullptr,
+            scheduler_is_on_thread,
+            scheduler_is_same_as,
+            scheduler_can_deliver_notifications),
+        "create Realm scheduler");
+}
+
 realm_value_t integer(std::int64_t value)
 {
     realm_value_t result{};
@@ -159,7 +187,9 @@ try {
         "validate fixture schema");
 
     auto config = take(realm_config_new(), "create fixture config");
+    auto scheduler = make_scheduler();
     realm_config_set_path(config.get(), realm_path.c_str());
+    realm_config_set_scheduler(config.get(), scheduler.get());
     realm_config_set_schema_mode(config.get(), RLM_SCHEMA_MODE_AUTOMATIC);
     realm_config_set_schema(config.get(), schema.get());
     realm_config_set_schema_version(config.get(), 1);

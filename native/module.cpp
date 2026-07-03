@@ -64,6 +64,34 @@ RealmPtr<T> owned(T* value, const std::string& context)
     return RealmPtr<T>(value);
 }
 
+bool scheduler_is_on_thread(realm_userdata_t)
+{
+    return true;
+}
+
+bool scheduler_is_same_as(const void*, const void*)
+{
+    return true;
+}
+
+bool scheduler_can_deliver_notifications(realm_userdata_t)
+{
+    return false;
+}
+
+RealmPtr<realm_scheduler_t> make_scheduler()
+{
+    return owned(
+        realm_scheduler_new(
+            nullptr,
+            nullptr,
+            nullptr,
+            scheduler_is_on_thread,
+            scheduler_is_same_as,
+            scheduler_can_deliver_notifications),
+        "create Realm scheduler");
+}
+
 std::string property_type_name(realm_property_type_e type)
 {
     switch (type) {
@@ -191,7 +219,9 @@ public:
         }
 
         auto config = owned(realm_config_new(), "create Realm configuration");
+        auto scheduler = make_scheduler();
         realm_config_set_path(config.get(), m_path.c_str());
+        realm_config_set_scheduler(config.get(), scheduler.get());
         realm_config_set_schema_mode(config.get(), RLM_SCHEMA_MODE_IMMUTABLE);
         realm_config_set_disable_format_upgrade(config.get(), true);
         realm_config_set_automatic_change_notifications(config.get(), false);
