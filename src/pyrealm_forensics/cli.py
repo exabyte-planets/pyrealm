@@ -88,7 +88,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Results: {args.output.resolve()}")
         else:
             raise AssertionError(f"unhandled command: {args.command}")
-    except OSError as error:
+    except (OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
+        if isinstance(error, ValueError):
+            print(
+                "suggestion: preserve the source and try another copy; malformed data prevented "
+                "safe analysis",
+                file=sys.stderr,
+            )
         return EXIT_OPERATIONAL_ERROR
     return EXIT_RECOGNIZED if analysis.header is not None else EXIT_NO_HEADER

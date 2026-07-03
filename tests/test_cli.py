@@ -158,6 +158,22 @@ def test_main_reports_existing_output_as_operational_error(
     assert "already exists" in capsys.readouterr().err
 
 
+def test_main_reports_malformed_data_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "pyrealm_forensics.cli.analyze_realm",
+        Mock(side_effect=ValueError("invalid structural value")),
+    )
+
+    status = main(["inspect", "sample.realm"])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "error: invalid structural value" in captured.err
+    assert "suggestion: preserve the source" in captured.err
+
+
 def test_parser_rejects_non_positive_min_string() -> None:
     with pytest.raises(SystemExit):
         _parser().parse_args(["carve", "sample.realm", "-o", "results", "--min-string", "0"])

@@ -36,6 +36,10 @@ with open_realm("evidence/disk_store.realm", key_file="evidence/disk_store.key")
         print(event["eventId"], event["content"])
 ```
 
+Normal iteration raises `RealmError` when a record cannot be decoded. To salvage later records
+from a damaged result set, use `events.iter_valid(callback)`; the callback receives the failed
+index and error. Without a callback, skipped indexes are emitted as runtime warnings.
+
 Object links are lazy mappings. Accessing a linked field resolves it once and caches the record:
 
 ```python
@@ -47,7 +51,9 @@ serializable = event.to_dict(expand_links=True, max_depth=2)
 
 Logical opening disables Realm file-format upgrades. Unsupported historical formats fail
 explicitly rather than modifying the source. The library only exposes the current committed
-state; it does not recover deleted records.
+state; it does not recover deleted records. On an open failure, preserve the source, verify the
+64-byte encryption key and source copy, then use `pyrealm-recover inspect` or `carve` for partial
+recovery.
 
 ## Recovery CLI
 

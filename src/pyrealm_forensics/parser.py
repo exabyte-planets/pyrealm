@@ -239,6 +239,24 @@ def _classify_nodes(nodes: dict[int, ArrayNode], header: RealmHeader) -> tuple[A
     return tuple(classified)
 
 
+def _top_reference_warning(label: str, reference: int, file_size: int) -> str | None:
+    """Explain an impossible root while allowing orphan carving to continue."""
+    if reference == 0:
+        return None
+    if reference % 8:
+        reason = "is not 8-byte aligned"
+    elif reference < FILE_HEADER_SIZE:
+        reason = "points inside the file header"
+    elif reference >= file_size:
+        reason = "points beyond the end of the file"
+    else:
+        return None
+    return (
+        f"The {label} top reference {reason}; the file is damaged or incomplete. "
+        "Preserve the source and try carving orphan arrays or obtaining another copy."
+    )
+
+
 def _analyze(path: Path, minimum_string: int | None) -> tuple[Analysis, list[CarvedString]]:
     """Analyze one open mapping, optionally carving strings from the same bytes.
 
@@ -271,6 +289,13 @@ def _analyze(path: Path, minimum_string: int | None) -> tuple[Analysis, list[Car
             nodes = _add_references(data, _scan_array_candidates(data))
             arrays = _classify_nodes(nodes, header)
             warnings: list[str] = []
+            for label, reference in (
+                ("active", header.active_top_ref),
+                ("inactive", header.inactive_top_ref),
+            ):
+                warning = _top_reference_warning(label, reference, len(data))
+                if warning is not None:
+                    warnings.append(warning)
             if header.active_top_ref not in nodes:
                 warnings.append(
                     "The active top reference did not resolve to a recognized array; the file "
@@ -392,7 +417,7 @@ def _extract_strings(
     current values from inactive or orphaned remnants.
     """
     strings: list[CarvedString] = []
-    utf16le_printable = _utf16le_pattern(minimum)
+    utf16le_printable = _utf16le_pattern(minimum) if minimum <= len(data) // 2 else None
     for node in nodes:
         if node.has_refs:
             continue
@@ -408,6 +433,8 @@ def _extract_strings(
                     reachability=node.reachability,
                 )
             )
+        if utf16le_printable is None:
+            continue
         for match in utf16le_printable.finditer(payload):
             strings.append(
                 CarvedString(

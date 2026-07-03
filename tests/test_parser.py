@@ -300,12 +300,24 @@ class TestParser:
 
         analysis = analyze_realm(path)
 
-        assert analysis.warnings == (
-            "The active top reference did not resolve to a recognized array; the file "
-            "may use an unsupported format or be damaged.",
-            "The inactive top reference did not resolve to a recognized array.",
-            "The reserved Realm header byte is non-zero.",
-        )
+        assert any("active top reference points beyond" in item for item in analysis.warnings)
+        assert any("inactive top reference points beyond" in item for item in analysis.warnings)
+        assert any("did not resolve to a recognized array" in item for item in analysis.warnings)
+        assert "The reserved Realm header byte is non-zero." in analysis.warnings
+
+    def test_bad_root_does_not_prevent_orphan_recovery(self, tmp_path: Path) -> None:
+        bad_root = 31
+        header_bytes = struct.pack("<QQ", bad_root, 0) + b"T-DB" + bytes((10, 10, 0, 0))
+        path = tmp_path / "bad-root.realm"
+        path.write_bytes(header_bytes + array(0x10, b"recover!", 8))
+
+        analysis = analyze_realm(path)
+
+        assert analysis.classification == "plaintext-realm"
+        assert len(analysis.arrays) == 1
+        assert analysis.arrays[0].reachability == "orphan"
+        assert any("not 8-byte aligned" in item for item in analysis.warnings)
+        assert any("try carving orphan arrays" in item for item in analysis.warnings)
 
     def test_utf8_strings_handles_multibyte_invalid_and_minimum_length(self) -> None:
         payload = b"\xffno\x00caf\xc3\xa9\t\x00end"
@@ -343,6 +355,18 @@ class TestParser:
             carve_realm(tmp_path / "missing.realm", output, 0)
 
         assert not output.exists()
+
+    def test_carve_handles_impossibly_large_string_minimum(self, tmp_path: Path) -> None:
+        path = tmp_path / "sample.realm"
+        output = tmp_path / "results"
+        path.write_bytes(synthetic_realm())
+
+        analysis = carve_realm(path, output, 10**100)
+
+        assert analysis.header is not None
+        assert (output / "strings.csv").read_text().splitlines() == [
+            "file_offset,array_offset,encoding,reachability,value"
+        ]
 
     def test_carve_writes_empty_reports_for_unrecognized_input(self, tmp_path: Path) -> None:
         path = tmp_path / "sample.bin"
