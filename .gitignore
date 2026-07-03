@@ -1,0 +1,14 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.ty/
+results/
+evidence/
+tests/data/
+.idea
+
+\-\-*/
+/--help*
