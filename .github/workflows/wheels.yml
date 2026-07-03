@@ -36,7 +36,7 @@ jobs:
             arch: AMD64
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -45,7 +45,7 @@ jobs:
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distributions-${{ matrix.platform }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
@@ -56,12 +56,12 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
           version: "0.11.26"
           enable-cache: true
@@ -69,7 +69,7 @@ jobs:
       - name: Build source distribution
         run: uv build --sdist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: distributions-sdist
           path: dist/*.tar.gz
