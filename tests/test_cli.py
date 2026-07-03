@@ -95,7 +95,7 @@ def test_main_inspect_prints_human_output_and_returns_success(
     assert "Classification: plaintext-realm" in capsys.readouterr().out
 
 
-def test_main_inspect_prints_json_and_returns_two_without_header(
+def test_main_inspect_prints_json_and_returns_three_without_header(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
@@ -104,7 +104,7 @@ def test_main_inspect_prints_json_and_returns_two_without_header(
 
     status = main(["inspect", "sample.bin", "--json"])
 
-    assert status == 2
+    assert status == 3
     assert json.loads(capsys.readouterr().out)["header"] is None
 
 
@@ -122,7 +122,7 @@ def test_main_carve_passes_options_and_prints_output_path(
     assert f"Results: {output.resolve()}" in capsys.readouterr().out
 
 
-def test_main_carve_returns_two_without_header(
+def test_main_carve_returns_three_without_header(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
@@ -131,5 +131,33 @@ def test_main_carve_returns_two_without_header(
 
     status = main(["carve", "sample.bin", "-o", "results"])
 
-    assert status == 2
+    assert status == 3
     capsys.readouterr()
+
+
+def test_main_reports_missing_input_as_operational_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    status = main(["inspect", str(tmp_path / "missing.realm")])
+
+    captured = capsys.readouterr()
+    assert status == 1
+    assert "error:" in captured.err
+    assert captured.out == ""
+
+
+def test_main_reports_existing_output_as_operational_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "results"
+    output.mkdir()
+
+    status = main(["carve", str(tmp_path / "missing.realm"), "-o", str(output)])
+
+    assert status == 1
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_parser_rejects_non_positive_min_string() -> None:
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["carve", "sample.realm", "-o", "results", "--min-string", "0"])

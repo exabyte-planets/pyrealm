@@ -4,10 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from pyrealm_forensics.models import Analysis, analysis_dict
 from pyrealm_forensics.parser import analyze_realm, carve_realm
+
+EXIT_RECOGNIZED = 0
+EXIT_OPERATIONAL_ERROR = 1
+EXIT_NO_HEADER = 3
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid int value: {text!r}") from None
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -24,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     carve = subcommands.add_parser("carve", help="carve arrays and strings into a new directory")
     carve.add_argument("realm", type=Path)
     carve.add_argument("--output", "-o", type=Path, required=True)
-    carve.add_argument("--min-string", type=int, default=4)
+    carve.add_argument("--min-string", type=_positive_int, default=4)
 
     return parser
 
@@ -52,20 +67,28 @@ def _human_summary(analysis: Analysis) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the command-line interface."""
+    """Run the command-line interface.
+
+    Exit codes: 0 for a recognized plaintext Realm, 1 for operational errors
+    (unreadable input, existing output directory), 3 when the input was analyzed
+    but no Realm header was recognized. Argparse reserves 2 for usage errors, so
+    the no-header status deliberately avoids it.
+    """
     args = _parser().parse_args(argv)
-    if args.command == "inspect":
-        analysis = analyze_realm(args.realm)
-        if args.json:
-            print(json.dumps(analysis_dict(analysis), indent=2))
-        else:
+    try:
+        if args.command == "inspect":
+            analysis = analyze_realm(args.realm)
+            if args.json:
+                print(json.dumps(analysis_dict(analysis), indent=2))
+            else:
+                print(_human_summary(analysis))
+        elif args.command == "carve":
+            analysis = carve_realm(args.realm, args.output, args.min_string)
             print(_human_summary(analysis))
-        return 0 if analysis.header is not None else 2
-
-    if args.command == "carve":
-        analysis = carve_realm(args.realm, args.output, args.min_string)
-        print(_human_summary(analysis))
-        print(f"Results: {args.output.resolve()}")
-        return 0 if analysis.header is not None else 2
-
-    raise AssertionError(f"unhandled command: {args.command}")
+            print(f"Results: {args.output.resolve()}")
+        else:
+            raise AssertionError(f"unhandled command: {args.command}")
+    except OSError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return EXIT_OPERATIONAL_ERROR
+    return EXIT_RECOGNIZED if analysis.header is not None else EXIT_NO_HEADER

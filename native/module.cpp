@@ -4,13 +4,9 @@
 #include <realm.h>
 #include <realm/decimal128.hpp>
 
-#include <array>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <iomanip>
 #include <memory>
-#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -66,6 +62,34 @@ RealmPtr<T> owned(T* value, const std::string& context)
         throw_last_error(context);
     }
     return RealmPtr<T>(value);
+}
+
+bool scheduler_is_on_thread(realm_userdata_t)
+{
+    return true;
+}
+
+bool scheduler_is_same_as(const void*, const void*)
+{
+    return true;
+}
+
+bool scheduler_can_deliver_notifications(realm_userdata_t)
+{
+    return false;
+}
+
+RealmPtr<realm_scheduler_t> make_scheduler()
+{
+    return owned(
+        realm_scheduler_new(
+            nullptr,
+            nullptr,
+            nullptr,
+            scheduler_is_on_thread,
+            scheduler_is_same_as,
+            scheduler_can_deliver_notifications),
+        "create Realm scheduler");
 }
 
 std::string property_type_name(realm_property_type_e type)
@@ -126,19 +150,6 @@ std::string object_id_string(const realm_object_id_t& object_id)
     return stream.str();
 }
 
-std::string uuid_string(const realm_uuid_t& uuid)
-{
-    std::ostringstream stream;
-    stream << std::hex << std::setfill('0');
-    for (std::size_t index = 0; index < sizeof(uuid.bytes); ++index) {
-        if (index == 4 || index == 6 || index == 8 || index == 10) {
-            stream << '-';
-        }
-        stream << std::setw(2) << static_cast<unsigned>(uuid.bytes[index]);
-    }
-    return stream.str();
-}
-
 std::string decimal_string(const realm_decimal128_t& value)
 {
     realm::Decimal128::Bid128 raw{{value.w[0], value.w[1]}};
@@ -194,6 +205,7 @@ public:
 private:
     std::shared_ptr<NativeRealm> m_realm;
     RealmPtr<realm_results_t> m_results;
+    std::size_t m_count = 0;
 };
 
 class NativeRealm : public std::enable_shared_from_this<NativeRealm> {
@@ -207,7 +219,9 @@ public:
         }
 
         auto config = owned(realm_config_new(), "create Realm configuration");
+        auto scheduler = make_scheduler();
         realm_config_set_path(config.get(), m_path.c_str());
+        realm_config_set_scheduler(config.get(), scheduler.get());
         realm_config_set_schema_mode(config.get(), RLM_SCHEMA_MODE_IMMUTABLE);
         realm_config_set_disable_format_upgrade(config.get(), true);
         realm_config_set_automatic_change_notifications(config.get(), false);
@@ -467,34 +481,29 @@ private:
             case RLM_TYPE_LINK:
                 return py::cast(NativeLink{value.link.target_table, value.link.target});
             case RLM_TYPE_UUID:
-                return py::module_::import("uuid").attr("UUID")(uuid_string(value.uuid));
+                return py::module_::import("uuid").attr("UUID")(
+                    py::arg("bytes") = py::bytes(
+                        reinterpret_cast<const char*>(value.uuid.bytes), sizeof(value.uuid.bytes)));
         }
         throw NativeError("unsupported Realm value type");
     }
 
-    py::list list_to_python(realm_object_t* object, realm_property_key_t property_key) const
+    template <typename OpenFn, typename SizeFn, typename GetFn>
+    py::list collection_to_python(
+        realm_object_t* object,
+        realm_property_key_t property_key,
+        OpenFn open,
+        SizeFn get_size,
+        GetFn get_item,
+        const std::string& label) const
     {
-        auto list = owned(realm_get_list(object, property_key), "read Realm list");
+        auto collection = owned(open(object, property_key), "read Realm " + label);
         std::size_t size = 0;
-        require(realm_list_size(list.get(), &size), "read Realm list size");
+        require(get_size(collection.get(), &size), "read Realm " + label + " size");
         py::list result;
         for (std::size_t index = 0; index < size; ++index) {
             realm_value_t value{};
-            require(realm_list_get(list.get(), index, &value), "read Realm list value");
-            result.append(value_to_python(value));
-        }
-        return result;
-    }
-
-    py::list set_to_python(realm_object_t* object, realm_property_key_t property_key) const
-    {
-        auto set = owned(realm_get_set(object, property_key), "read Realm set");
-        std::size_t size = 0;
-        require(realm_set_size(set.get(), &size), "read Realm set size");
-        py::list result;
-        for (std::size_t index = 0; index < size; ++index) {
-            realm_value_t value{};
-            require(realm_set_get(set.get(), index, &value), "read Realm set value");
+            require(get_item(collection.get(), index, &value), "read Realm " + label + " value");
             result.append(value_to_python(value));
         }
         return result;
@@ -529,10 +538,13 @@ private:
             }
             switch (property.collection_type) {
                 case RLM_COLLECTION_TYPE_LIST:
-                    result[py::str(property.name)] = list_to_python(object, property.key);
+                    result[py::str(property.name)] = collection_to_python(
+                        object, property.key, realm_get_list, realm_list_size, realm_list_get,
+                        "list");
                     break;
                 case RLM_COLLECTION_TYPE_SET:
-                    result[py::str(property.name)] = set_to_python(object, property.key);
+                    result[py::str(property.name)] = collection_to_python(
+                        object, property.key, realm_get_set, realm_set_size, realm_set_get, "set");
                     break;
                 case RLM_COLLECTION_TYPE_DICTIONARY:
                     result[py::str(property.name)] = dictionary_to_python(object, property.key);
@@ -605,13 +617,13 @@ NativeResults::NativeResults(std::shared_ptr<NativeRealm> realm, realm_results_t
     : m_realm(std::move(realm))
     , m_results(results)
 {
+    // The realm is opened immutably, so the count can never change after construction.
+    require(realm_results_count(m_results.get(), &m_count), "count Realm query results");
 }
 
 std::size_t NativeResults::size() const
 {
-    std::size_t size = 0;
-    require(realm_results_count(m_results.get(), &size), "count Realm query results");
-    return size;
+    return m_count;
 }
 
 py::dict NativeResults::get(std::int64_t index) const

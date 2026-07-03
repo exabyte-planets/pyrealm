@@ -264,6 +264,19 @@ class TestParser:
         assert analysis.classification == "possible-encrypted-or-unsupported-realm"
         assert analysis.header is None
 
+    def test_headerless_classification_uses_content_not_filename(self, tmp_path: Path) -> None:
+        carved = tmp_path / "file0001.bin"
+        carved.write_bytes(bytes(range(256)) * 16)
+        renamed = tmp_path / "renamed.realm"
+        renamed.write_bytes(b"low entropy content")
+
+        carved_analysis = analyze_realm(carved)
+        renamed_analysis = analyze_realm(renamed)
+
+        assert carved_analysis.classification == "possible-encrypted-or-unsupported-realm"
+        assert renamed_analysis.classification == "not-a-plain-realm"
+        assert any(".realm" in warning for warning in renamed_analysis.warnings)
+
     def test_non_realm_file_and_empty_file_have_specific_classifications(
         self, tmp_path: Path
     ) -> None:
@@ -314,6 +327,15 @@ class TestParser:
         ]
         assert skipped == []
 
+    def test_extract_strings_honors_minimum_below_four_for_utf16(self) -> None:
+        payload = b"\x00\x00" + "hi".encode("utf-16le")
+        text_node = node(0, payload_size=len(payload))
+        data = b"A" * 8 + payload
+
+        extracted = _extract_strings(mmap_compatible(data), (text_node,), 2)
+
+        assert [(item.encoding, item.value) for item in extracted] == [("utf-16le", "hi")]
+
     def test_carve_validates_minimum_before_creating_output(self, tmp_path: Path) -> None:
         output = tmp_path / "results"
 
@@ -344,3 +366,10 @@ class TestParser:
 
         with pytest.raises(FileExistsError):
             carve_realm(path, output)
+
+    def test_carve_checks_output_before_reading_the_source(self, tmp_path: Path) -> None:
+        output = tmp_path / "results"
+        output.mkdir()
+
+        with pytest.raises(FileExistsError):
+            carve_realm(tmp_path / "missing.realm", output)

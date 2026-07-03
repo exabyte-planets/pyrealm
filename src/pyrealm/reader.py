@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import datetime as dt
 import decimal
 import uuid
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import cast, overload
 
 from pyrealm import _native
+
+_EPOCH = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 
 
 class RealmError(Exception):
@@ -27,6 +30,15 @@ class RealmQueryError(RealmError):
     """Raised when Realm Core rejects or cannot execute an RQL query."""
 
 
+@contextlib.contextmanager
+def _native_errors() -> Iterator[None]:
+    """Translate the private native exception into the public RealmError."""
+    try:
+        yield
+    except _native.NativeError as error:
+        raise RealmError(str(error)) from error
+
+
 @dataclass(frozen=True, slots=True)
 class RealmTimestamp:
     """A Realm timestamp without losing nanosecond precision."""
@@ -37,9 +49,14 @@ class RealmTimestamp:
     @property
     def datetime(self) -> dt.datetime:
         """Return the closest UTC Python datetime."""
-        return dt.datetime.fromtimestamp(self.seconds, dt.UTC).replace(
-            microsecond=self.nanoseconds // 1_000
-        )
+        try:
+            delta = dt.timedelta(seconds=self.seconds, microseconds=self.nanoseconds // 1_000)
+            return _EPOCH + delta
+        except OverflowError as error:
+            raise RealmError(
+                f"timestamp is outside the datetime range: "
+                f"seconds={self.seconds}, nanoseconds={self.nanoseconds}"
+            ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,8 +124,17 @@ class RealmLink(Mapping[str, object]):
     def __len__(self) -> int:
         return len(self.resolve())
 
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, RealmLink):
+            return (
+                self._realm_ref() is other._realm_ref()
+                and self.table_key == other.table_key
+                and self.object_key == other.object_key
+            )
+        return NotImplemented
+
     def __hash__(self) -> int:
-        return hash((id(self._realm_ref()), self.table_key, self.object_key))
+        return hash((RealmLink, self.table_key, self.object_key))
 
     def __repr__(self) -> str:
         return f"RealmLink(table={self.table_name!r}, key={self.object_key})"
@@ -203,7 +229,8 @@ class Results(Sequence[Record]):
         self._native = native
 
     def __len__(self) -> int:
-        return len(self._native)
+        with _native_errors():
+            return len(self._native)
 
     @overload
     def __getitem__(self, index: int) -> Record: ...
@@ -212,12 +239,13 @@ class Results(Sequence[Record]):
     def __getitem__(self, index: slice) -> list[Record]: ...
 
     def __getitem__(self, index: int | slice) -> Record | list[Record]:
-        if isinstance(index, slice):
-            return [
-                self._realm._record_from_raw(self._native[item])
-                for item in range(*index.indices(len(self)))
-            ]
-        return self._realm._record_from_raw(self._native[index])
+        with _native_errors():
+            if isinstance(index, slice):
+                return [
+                    self._realm._record_from_raw(self._native[item])
+                    for item in range(*index.indices(len(self)))
+                ]
+            return self._realm._record_from_raw(self._native[index])
 
     def __iter__(self) -> Iterator[Record]:
         for index in range(len(self)):
@@ -240,14 +268,16 @@ class Table:
         return self.schema.name
 
     def __len__(self) -> int:
-        return self._realm._native.count(self.name)
+        with _native_errors():
+            return self._realm._native.count(self.name)
 
     def __iter__(self) -> Iterator[Record]:
         return iter(self.all())
 
     def all(self) -> Results:
         """Return all logical records."""
-        return Results(self._realm, self._realm._native.all(self.name))
+        with _native_errors():
+            return Results(self._realm, self._realm._native.all(self.name))
 
     def where(self, query: str, *parameters: object) -> Results:
         """Execute a parameterized Realm Query Language expression."""
@@ -325,20 +355,16 @@ class Realm:
 
     def close(self) -> None:
         """Close the immutable Realm view."""
-        try:
+        with _native_errors():
             self._native.close()
-        except _native.NativeError as error:
-            raise RealmError(str(error)) from error
 
     def _record(self, table_key: int, object_key: int) -> Record:
         identity = (table_key, object_key)
         cached = self._record_cache.get(identity)
         if cached is not None:
             return cached
-        try:
+        with _native_errors():
             raw = self._native.record(table_key, object_key)
-        except _native.NativeError as error:
-            raise RealmError(str(error)) from error
         return self._record_from_raw(raw)
 
     def _record_from_raw(self, raw: dict[str, object]) -> Record:
